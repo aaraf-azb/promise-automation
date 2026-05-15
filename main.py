@@ -3,6 +3,7 @@ import subprocess
 import time
 import requests
 import datetime
+import calendar
 from typing import Tuple
 import re
 
@@ -105,7 +106,7 @@ def prepare_csv_reader_writer(input_path: Path, output_file: Path):
         input_headers = list(input_rows[0].keys()) if input_rows else []
 
     # Prepare output headers (add columns you need)
-    output_headers = input_headers + ["Type", "Name", "Begin Date", "End Date"]
+    output_headers = input_headers + ["Insurance Name", "Begin Date", "End Date"]
 
     # Open output CSV and prepare writer
     f_out = open(output_file, mode='w', newline='', encoding='utf-8')
@@ -118,8 +119,10 @@ def search(page, member_id_raw: str, dob: str):
     member_id = member_id_raw.strip().zfill(10)
     today = datetime.date.today()
     first_of_month = today.replace(day=1)
+    _, last_day = calendar.monthrange(today.year, today.month)
+    last_of_month = today.replace(day=last_day)
     start_date_str = first_of_month.strftime("%m/%d/%Y")
-    end_date_str = today.strftime("%m/%d/%Y")
+    end_date_str = last_of_month.strftime("%m/%d/%Y")
 
     page.fill("#dnn_ctr1732_Eligibility_txtRecipientID2", member_id)
     page.fill("#dnn_ctr1732_Eligibility_txtDob3", dob)
@@ -140,17 +143,18 @@ def extract_results(page):
 
             if "Managed Care" in type_text:
                 name_cell = row.query_selector("td:nth-child(2)")
-                begin_cell = row.query_selector("td:nth-child(3)")
-                end_cell = row.query_selector("td:nth-child(4)")
-                name = name_cell.inner_text().strip() if name_cell else ""
-                begin = begin_cell.inner_text().strip() if begin_cell else ""
-                end = end_cell.inner_text().strip() if end_cell else ""
-                result_rows.append({
-                    "Type": type_text,
-                    "Name": name,
-                    "Begin Date": begin,
-                    "End Date": end
-                })
+
+                if "COMMUNITY HEALTHCHOICES" in name_cell.inner_text().strip().upper():
+                    begin_cell = row.query_selector("td:nth-child(3)")
+                    end_cell = row.query_selector("td:nth-child(4)")
+                    name = name_cell.inner_text().strip() if name_cell else ""
+                    begin = begin_cell.inner_text().strip() if begin_cell else ""
+                    end = end_cell.inner_text().strip() if end_cell else ""
+                    result_rows.append({
+                        "Insurance Name": name,
+                        "Begin Date": begin,
+                        "End Date": end
+                    })
     except Exception as e:
         print(f"⚠️ No Results Found: {e}")
     return result_rows
@@ -257,28 +261,24 @@ def main():
 
             # Prepare aggregated strings (numbered, multi-line) for each column
             if not result:
-                agg_type = ""
                 agg_name = ""
                 agg_begin = ""
                 agg_end = ""
             else:
-                agg_type = "\n".join(f"{i+1}. {d['Type']}" for i, d in enumerate(result))
-                agg_name = "\n".join(f"{i+1}. {d['Name']}" for i, d in enumerate(result))
+                agg_name = "\n".join(f"{i+1}. {d['Insurance Name']}" for i, d in enumerate(result))
                 agg_begin = "\n".join(f"{i+1}. {d['Begin Date']}" for i, d in enumerate(result))
                 agg_end = "\n".join(f"{i+1}. {d['End Date']}" for i, d in enumerate(result))
 
                 output_row = dict(row)
                 if result:
                     output_row.update({
-                        "Type": agg_type,
-                        "Name": agg_name,
+                        "Insurance Name": agg_name,
                         "Begin Date": agg_begin,
                         "End Date": agg_end
                     })
                 else:
                     output_row.update({
-                        "Type": "",
-                        "Name": "",
+                        "Insurance Name": "",
                         "Begin Date": "",
                         "End Date": ""
                     })
