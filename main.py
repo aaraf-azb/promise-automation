@@ -2,18 +2,46 @@ import csv
 import subprocess
 import time
 import requests
-import datetime
-from typing import Tuple
 import re
+import random
+import datetime
+import calendar
+from typing import Tuple
+
 
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-
 CDP_URL = "http://127.0.0.1:9222"
 
+PAYER_MAPPING = {
+    "UPMC": [
+        "UPMC LTSS (CKH)",
+        "CH2F-UPMC COMMUNITY HEALTHCHOICES"
+    ],
+
+    "KEYSTONE FIRST": [
+        "KEYSTONE FIRST CHC (CKH)",
+        "CH2D-KEYSTONE FIRST COMMUNITY HEALTHCHOICES"
+    ],
+
+    "PA HEALTH AND WELLNESS": [
+        "Centene PA Health Wellness (CKH)",
+        "CH2E-PA HEALTH AND WELLNESS COMMUNITY HEALTHCHOICES"
+    ],
+
+    "AMERIHEALTH": [
+        "AmeriHealth Caritas of PA (CKH)",
+        "AMERIHEALTH CARITAS PA COMMUNITY HEALTHCHOICES"
+    ]
+}
+
+
+
+
 def sanitize_filename(value: str) -> str:
-    return re.sub(r'[^\w\-_. ]', '_', value)
+    return re.sub(r"[^\w\-_. ]", "_", value)
+
 
 def is_cdp_running():
     try:
@@ -22,13 +50,17 @@ def is_cdp_running():
     except Exception:
         return False
 
+
 def launch_edge_with_cdp():
     print("🚀 Launching new Edge browser with CDP...")
     edge_cmd = [
-        "cmd", "/c", "start", "msedge",
+        "cmd",
+        "/c",
+        "start",
+        "msedge",
         "--remote-debugging-port=9222",
         "--start-maximized",
-        "--user-data-dir=C:\\edge-playwright-profile"
+        "--user-data-dir=C:\\edge-playwright-profile",
     ]
     subprocess.Popen(edge_cmd)
     for _ in range(20):
@@ -37,6 +69,7 @@ def launch_edge_with_cdp():
             return True
         time.sleep(1)
     return False
+
 
 def ensure_edge_cdp():
     if is_cdp_running():
@@ -47,6 +80,7 @@ def ensure_edge_cdp():
     if not success:
         raise Exception("❌ Failed to launch Edge with CDP")
 
+
 def get_or_create_page(context):
     if context.pages:
         page = context.pages[0]
@@ -56,6 +90,7 @@ def get_or_create_page(context):
     print("🆕 Created new tab")
     return page
 
+
 def get_valid_csv_path() -> Path:
     """
     Prompts the user to enter the input CSV file path.
@@ -64,19 +99,28 @@ def get_valid_csv_path() -> Path:
     """
     while True:
         try:
-            csv_input_path = input("Please enter the path to the input CSV file (or press Enter to cancel): ").strip('"').strip()
+            csv_input_path = (
+                input(
+                    "Please enter the path to the input CSV file (or press Enter to cancel): "
+                )
+                .strip('"')
+                .strip()
+            )
             if csv_input_path == "":
                 print("Input cancelled by user.")
                 return None
 
             input_path = Path(csv_input_path)
             if not input_path.is_file():
-                print(f"❌ Input CSV file not found: {csv_input_path}. Please try again.")
+                print(
+                    f"❌ Input CSV file not found: {csv_input_path}. Please try again."
+                )
                 continue
 
             return input_path
         except Exception as e:
             print(f"❌ Error processing input: {e}. Please try again.")
+
 
 def prepare_output_folder(input_csv_path: str, timestamp: str) -> Tuple[Path, Path]:
     """
@@ -94,144 +138,207 @@ def prepare_output_folder(input_csv_path: str, timestamp: str) -> Tuple[Path, Pa
     output_file = output_folder / f"{input_stem}-{timestamp}.csv"
     return output_folder, output_file
 
+
 def prepare_csv_reader_writer(input_path: Path, output_file: Path):
     """
     Reads the entire input CSV file, prepares the output CSV file with additional headers,
     and returns the list of input rows and the CSV writer object.
     """
     # Read all input data
-    with open(input_path, newline='', encoding='utf-8') as f:
+    with open(input_path, newline="", encoding="utf-8") as f:
         input_rows = list(csv.DictReader(f))
         input_headers = list(input_rows[0].keys()) if input_rows else []
 
     # Prepare output headers (add columns you need)
-    output_headers = input_headers + ["Type", "Name", "Begin Date", "End Date"]
-
+    output_headers = input_headers + [
+        "Insurance Name",
+        "Begin Date",
+        "End Date",
+        "Discrepancy",
+        "Penalty",
+    ]
     # Open output CSV and prepare writer
-    f_out = open(output_file, mode='w', newline='', encoding='utf-8')
+    f_out = open(output_file, mode="w", newline="", encoding="utf-8")
     writer = csv.DictWriter(f_out, fieldnames=output_headers)
     writer.writeheader()
 
     return input_rows, writer, f_out
 
+def normalize_payer(contract: str) -> str:
+
+    upper_name = contract.upper()
+
+    for standard_name, variants in PAYER_MAPPING.items():
+
+        for variant in variants:
+
+            if variant.upper() in upper_name:
+                return standard_name
+
+    return contract
+
 def search(page, member_id_raw: str, dob: str):
     member_id = member_id_raw.strip().zfill(10)
     today = datetime.date.today()
     first_of_month = today.replace(day=1)
+    _, last_day = calendar.monthrange(today.year, today.month)
+    last_of_month = today.replace(day=last_day)
     start_date_str = first_of_month.strftime("%m/%d/%Y")
-    end_date_str = today.strftime("%m/%d/%Y")
+    end_date_str = last_of_month.strftime("%m/%d/%Y")
 
     page.fill("#dnn_ctr1732_Eligibility_txtRecipientID2", member_id)
     page.fill("#dnn_ctr1732_Eligibility_txtDob3", dob)
     page.fill("#dnn_ctr1732_Eligibility_txtDosFrom", start_date_str)
     page.fill("#dnn_ctr1732_Eligibility_txtDosTo", end_date_str)
 
-    page.wait_for_selector("#dnn_ctr1732_Eligibility_btnSearch", timeout=60000)  # wait up to 60s
-    page.click('#dnn_ctr1732_Eligibility_btnSearch')
+    delay = random.uniform(1, 5)  # random delay between 1 and 5 seconds
+    time.sleep(delay)
+    page.wait_for_selector(
+        "#dnn_ctr1732_Eligibility_btnSearch", state="visible", timeout=60000
+    )  # wait up to 60s
+    page.click("#dnn_ctr1732_Eligibility_btnSearch", no_wait_after=True)
 
-def extract_results(page):
+    return start_date_str, end_date_str
+
+
+def extract_results(page, row_contract: str, start_date_str: str, end_date_str: str):
     result_rows = []
+    insurance_names = []
+    begin_dates = []
+    end_dates = []
+    discrepancy = None
+    penalty = None
     try:
-        page.wait_for_selector("#dnn_ctr1732_Eligibility_gvSummary tbody tr:not(:first-child)", timeout=60000)
-        rows = page.query_selector_all("#dnn_ctr1732_Eligibility_gvSummary tbody tr:not(:first-child)")
+        page.wait_for_selector(
+            "#dnn_ctr1732_Eligibility_gvSummary tbody tr:not(:first-child)",
+            state="visible",
+            timeout=60000,
+        )
+        rows = page.query_selector_all(
+            "#dnn_ctr1732_Eligibility_gvSummary tbody tr:not(:first-child)"
+        )
         for row in rows:
             type_cell = row.query_selector("td:nth-child(1)")
             type_text = type_cell.inner_text().strip() if type_cell else ""
 
             if "Managed Care" in type_text:
                 name_cell = row.query_selector("td:nth-child(2)")
-                begin_cell = row.query_selector("td:nth-child(3)")
-                end_cell = row.query_selector("td:nth-child(4)")
                 name = name_cell.inner_text().strip() if name_cell else ""
-                begin = begin_cell.inner_text().strip() if begin_cell else ""
-                end = end_cell.inner_text().strip() if end_cell else ""
-                result_rows.append({
-                    "Type": type_text,
-                    "Name": name,
-                    "Begin Date": begin,
-                    "End Date": end
-                })
+
+                if "COMMUNITY HEALTHCHOICES" in name_cell.inner_text().strip().upper():
+                    begin_cell = row.query_selector("td:nth-child(3)")
+                    end_cell = row.query_selector("td:nth-child(4)")
+                    name = name_cell.inner_text().strip() if name_cell else ""
+                    begin = begin_cell.inner_text().strip() if begin_cell else ""
+                    end = end_cell.inner_text().strip() if end_cell else ""
+
+                    insurance_names.append(name)
+                    begin_dates.append(begin)
+                    end_dates.append(end)
+                    result_rows.append(
+                        {"Insurance Name": name, "Begin Date": begin, "End Date": end}
+                    )
+
+        # Determine discrepancy by comparing (MCO) normalized contract name with insurance names, and also checking date ranges
+        discrepancy = "No"
+        contract = row_contract
+
+        normalized_contract = normalize_payer(contract)
+        match_found = False
+
+        for insurance_name in insurance_names:
+            normalized_insurance = normalize_payer(insurance_name)
+            print(f"Comparing normalized contract '{normalized_contract}' with insurance '{normalized_insurance}'")
+            if normalized_contract == normalized_insurance:
+                match_found = True
+                break
+        
+        if match_found == False:
+            discrepancy = "Yes"
+
+
+        for date in begin_dates:
+            if date != start_date_str:
+                discrepancy = "Yes"
+
+        for date in end_dates:
+            if date != end_date_str:
+                discrepancy = "Yes"
+
+        # Determine penalty
+        penalty = "No"
+        penalty_count = page.get_by_text("Penalty", exact=True).count()
+        if penalty_count > 0:
+            penalty = "Yes"
     except Exception as e:
         print(f"⚠️ No Results Found: {e}")
-    return result_rows
+    return result_rows, discrepancy, penalty
+
 
 def take_screenshot(page, output_folder, filename_prefix):
-    page.wait_for_selector("#dnn_ctr1732_Eligibility_gvRecipient")
+
     page.wait_for_selector("#dnn_ctr1732_Eligibility_Table6")
 
+    page.evaluate("""
+                () => {
+                    document.body.style.zoom = "90%"
+                }
+            """)
     try:
-        table1 = page.locator("#dnn_ctr1732_Eligibility_gvRecipient")
-        table2 = page.locator("#dnn_ctr1732_Eligibility_Table6")
+        table = page.locator("#dnn_ctr1732_Eligibility_Table6")
 
-        # Scroll to second table to stabilize viewport
-        table2.scroll_into_view_if_needed()
+        # Scroll element into view
+        table.scroll_into_view_if_needed()
 
-        # Wait for layout to settle
-        page.wait_for_timeout(1500)
+        # Wait for portal layout to settle
+        page.wait_for_timeout(1000)
 
-        # Get fresh bounding boxes AFTER scrolling
-        box1 = table1.bounding_box()
-        box2 = table2.bounding_box()
+        # Get element position and size
+        box = table.bounding_box()
 
-        if not box1 or not box2:
-            print("⚠️ Could not get bounding boxes.")
+        if not box:
+            print("⚠️ Could not get bounding box.")
             return
 
-        # Different padding for each side
+        # Extra surrounding space
         padding_left = 200
-        padding_right = 300
+        padding_right = 200
 
-        padding_top = 1 
-        padding_bottom = 800
-
-        # Calculate clip area
-        left = min(box1["x"], box2["x"]) - padding_left
-        top = min(box1["y"], box2["y"]) - padding_top
-
-        right = max(
-            box1["x"] + box1["width"],
-            box2["x"] + box2["width"]
-        ) + padding_right
-
-        bottom = max(
-            box1["y"] + box1["height"],
-            box2["y"] + box2["height"]
-        ) + padding_bottom
-
-        # Prevent negative coordinates
-        left = max(0, left)
-        top = max(0, top)
+        padding_top = 500
+        padding_bottom = 500
 
         screenshot_path = output_folder / f"{filename_prefix}.png"
 
-        # Take screenshot
         page.screenshot(
             path=str(screenshot_path),
             clip={
-                "x": left,
-                "y": top,
-                "width": right - left,
-                "height": bottom - top
-            }
+                "x": max(0, box["x"] - padding_left),
+                "y": max(0, box["y"] - padding_top),
+                "width": (box["width"] + padding_left + padding_right),
+                "height": (box["height"] + padding_top + padding_bottom),
+            },
         )
 
         print(f"🖼️ Screenshot saved: {screenshot_path}")
 
     except Exception as e:
         print(f"⚠️ Error taking screenshot: {e}")
- 
+
+
 def main():
     ensure_edge_cdp()
     with sync_playwright() as p:
         browser = p.chromium.connect_over_cdp(CDP_URL)
         context = browser.contexts[0] if browser.contexts else browser.new_context()
         page = get_or_create_page(context)
-        input("Please log in to the portal if needed, then press Enter here to continue...")
+        input(
+            "Please log in to the portal if needed, then press Enter here to continue..."
+        )
 
         input_path = get_valid_csv_path()
         if input_path is None:
             return  # or exit
-        
+
         # Prepare output folder and unique output file
         timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         output_folder, output_file = prepare_output_folder(input_path, timestamp)
@@ -241,57 +348,77 @@ def main():
         # remember to close the file object at the end:
         # f_out.close()
 
-        page.wait_for_selector('#dnn_PrimaryMenu_PrimaryMenuRepeater_PrimaryItemHCPHyperlink_2')
-        page.click('#dnn_PrimaryMenu_PrimaryMenuRepeater_PrimaryItemHCPHyperlink_2')
+        page.wait_for_selector(
+            "#dnn_PrimaryMenu_PrimaryMenuRepeater_PrimaryItemHCPHyperlink_2"
+        )
+        page.click("#dnn_PrimaryMenu_PrimaryMenuRepeater_PrimaryItemHCPHyperlink_2")
 
         for idx, row in enumerate(input_rows, 1):
+            row_contract = row.get("Contract Name", "").strip()
             member_id_raw = row.get("Medicaid Number", "").strip()
             dob = row.get("Date of Birth", "").strip()
             lname = row.get("Last Name", "").strip()
             fname = row.get("First Name", "").strip()
-            name = f"{lname}, {fname}"
-            sanitized_name = sanitize_filename(name)
-                
-            search(page, member_id_raw, dob)
-            result = extract_results(page)
+            fullname = f"{lname}, {fname}"
+            sanitized_name = sanitize_filename(fullname)
+
+
+            # Calling the search function to perform the search and get the date range used for discrepancy checking
+            start_date_str, end_date_str = search(page, member_id_raw, dob)
+            
+            # Calling the extract_results function to get the results, discrepancy status, and penalty status
+            result, discrepancy, penalty = extract_results(page, row_contract, start_date_str, end_date_str)
 
             # Prepare aggregated strings (numbered, multi-line) for each column
             if not result:
-                agg_type = ""
                 agg_name = ""
                 agg_begin = ""
                 agg_end = ""
             else:
-                agg_type = "\n".join(f"{i+1}. {d['Type']}" for i, d in enumerate(result))
-                agg_name = "\n".join(f"{i+1}. {d['Name']}" for i, d in enumerate(result))
-                agg_begin = "\n".join(f"{i+1}. {d['Begin Date']}" for i, d in enumerate(result))
-                agg_end = "\n".join(f"{i+1}. {d['End Date']}" for i, d in enumerate(result))
+                agg_name = "\n".join(
+                    f"{i+1}. {d['Insurance Name']}" for i, d in enumerate(result)
+                )
+                agg_begin = "\n".join(
+                    f"{i+1}. {d['Begin Date']}" for i, d in enumerate(result)
+                )
+                agg_end = "\n".join(
+                    f"{i+1}. {d['End Date']}" for i, d in enumerate(result)
+                )
 
                 output_row = dict(row)
                 if result:
-                    output_row.update({
-                        "Type": agg_type,
-                        "Name": agg_name,
-                        "Begin Date": agg_begin,
-                        "End Date": agg_end
-                    })
+                    output_row.update(
+                        {
+                            "Insurance Name": agg_name,
+                            "Begin Date": agg_begin,
+                            "End Date": agg_end,
+                            "Discrepancy": discrepancy,
+                            "Penalty": penalty,
+                        }
+                    )
                 else:
-                    output_row.update({
-                        "Type": "",
-                        "Name": "",
-                        "Begin Date": "",
-                        "End Date": ""
-                    })
-                        
+                    output_row.update(
+                        {
+                            "Insurance Name": "",
+                            "Begin Date": "",
+                            "End Date": "",
+                            "Discrepancy": discrepancy,
+                            "Penalty": penalty,
+                        }
+                    )
+
                 writer.writerow(output_row)
-                    
-                screenshot_prefix = f"screenshot_{sanitized_name}_{member_id_raw}_{timestamp}"
+
+                screenshot_prefix = (
+                    f"screenshot_{sanitized_name}_{member_id_raw}_{timestamp}"
+                )
                 take_screenshot(page, output_folder, screenshot_prefix)
             print(f"Processed {idx}/{len(input_rows)}: Medicaid Number={member_id_raw}")
             f_out.flush()  # ensure data is written to disk after each row
         f_out.close()  # close the file after processing all rows
 
     print(f"✅ Automation complete. Output saved to {output_file}")
+
 
 if __name__ == "__main__":
     main()
