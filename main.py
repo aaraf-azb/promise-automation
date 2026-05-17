@@ -15,28 +15,20 @@ from playwright.sync_api import sync_playwright
 CDP_URL = "http://127.0.0.1:9222"
 
 PAYER_MAPPING = {
-    "UPMC": [
-        "UPMC LTSS (CKH)",
-        "CH2F-UPMC COMMUNITY HEALTHCHOICES"
-    ],
-
+    "UPMC": ["UPMC LTSS (CKH)", "CH2F-UPMC COMMUNITY HEALTHCHOICES"],
     "KEYSTONE FIRST": [
         "KEYSTONE FIRST CHC (CKH)",
-        "CH2D-KEYSTONE FIRST COMMUNITY HEALTHCHOICES"
+        "CH2D-KEYSTONE FIRST COMMUNITY HEALTHCHOICES",
     ],
-
     "PA HEALTH AND WELLNESS": [
         "Centene PA Health Wellness (CKH)",
-        "CH2E-PA HEALTH AND WELLNESS COMMUNITY HEALTHCHOICES"
+        "CH2E-PA HEALTH AND WELLNESS COMMUNITY HEALTHCHOICES",
     ],
-
     "AMERIHEALTH": [
         "AmeriHealth Caritas of PA (CKH)",
-        "AMERIHEALTH CARITAS PA COMMUNITY HEALTHCHOICES"
-    ]
+        "AMERIHEALTH CARITAS PA COMMUNITY HEALTHCHOICES",
+    ],
 }
-
-
 
 
 def sanitize_filename(value: str) -> str:
@@ -164,6 +156,7 @@ def prepare_csv_reader_writer(input_path: Path, output_file: Path):
 
     return input_rows, writer, f_out
 
+
 def normalize_payer(contract: str) -> str:
 
     upper_name = contract.upper()
@@ -176,6 +169,7 @@ def normalize_payer(contract: str) -> str:
                 return standard_name
 
     return contract
+
 
 def search(page, member_id_raw: str, dob: str):
     member_id = member_id_raw.strip().zfill(10)
@@ -248,14 +242,15 @@ def extract_results(page, row_contract: str, start_date_str: str, end_date_str: 
 
         for insurance_name in insurance_names:
             normalized_insurance = normalize_payer(insurance_name)
-            print(f"Comparing normalized contract '{normalized_contract}' with insurance '{normalized_insurance}'")
+            print(
+                f"Comparing normalized contract '{normalized_contract}' with insurance '{normalized_insurance}'"
+            )
             if normalized_contract == normalized_insurance:
                 match_found = True
                 break
-        
+
         if match_found == False:
             discrepancy = "Yes"
-
 
         for date in begin_dates:
             if date != start_date_str:
@@ -325,6 +320,36 @@ def take_screenshot(page, output_folder, filename_prefix):
         print(f"⚠️ Error taking screenshot: {e}")
 
 
+def setup_progress_tracking(input_path, output_headers):
+
+    progress_file = input_path.parent / f"{input_path.stem}_progress.csv"
+
+    processed_ids = set()
+
+    file_exists = progress_file.exists()
+
+    progress_f = open(progress_file, mode="a", newline="", encoding="utf-8")
+
+    progress_writer = csv.DictWriter(progress_f, fieldnames=output_headers)
+
+    if not file_exists:
+        progress_writer.writeheader()
+
+    else:
+        with open(progress_file, newline="", encoding="utf-8") as f:
+
+            reader = csv.DictReader(f)
+
+            for row in reader:
+
+                medicaid = row.get("Medicaid Number", "").strip()
+
+                if medicaid:
+                    processed_ids.add(medicaid)
+
+    return (progress_file, processed_ids, progress_writer, progress_f)
+
+
 def main():
     ensure_edge_cdp()
     with sync_playwright() as p:
@@ -345,6 +370,10 @@ def main():
 
         input_rows, writer, f_out = prepare_csv_reader_writer(input_path, output_file)
 
+        progress_file, processed_ids, progress_writer, progress_f = (
+            setup_progress_tracking(input_path, writer.fieldnames)
+        )
+
         # remember to close the file object at the end:
         # f_out.close()
 
@@ -356,24 +385,33 @@ def main():
         for idx, row in enumerate(input_rows, 1):
             row_contract = row.get("Contract Name", "").strip()
             member_id_raw = row.get("Medicaid Number", "").strip()
+
+            if member_id_raw in processed_ids:
+
+                print(f"⏩ Skipping completed row: {member_id_raw}")
+
+                continue
+
             dob = row.get("Date of Birth", "").strip()
             lname = row.get("Last Name", "").strip()
             fname = row.get("First Name", "").strip()
             fullname = f"{lname}, {fname}"
             sanitized_name = sanitize_filename(fullname)
 
-
             # Calling the search function to perform the search and get the date range used for discrepancy checking
             start_date_str, end_date_str = search(page, member_id_raw, dob)
-            
-            # Calling the extract_results function to get the results, discrepancy status, and penalty status
-            result, discrepancy, penalty = extract_results(page, row_contract, start_date_str, end_date_str)
 
-            # Prepare aggregated strings (numbered, multi-line) for each column
+            # Calling the extract_results function to get the results, discrepancy status, and penalty status
+            result, discrepancy, penalty = extract_results(
+                page, row_contract, start_date_str, end_date_str
+            )
+
+            # After extracting `result`, determining `discrepancy`, `penalty`, and within your CSV writing loop:
+
             if not result:
-                agg_name = ""
-                agg_begin = ""
-                agg_end = ""
+                agg_name = "N/A"
+                agg_begin = "N/A"
+                agg_end = "N/A"
             else:
                 agg_name = "\n".join(
                     f"{i+1}. {d['Insurance Name']}" for i, d in enumerate(result)
@@ -385,37 +423,33 @@ def main():
                     f"{i+1}. {d['End Date']}" for i, d in enumerate(result)
                 )
 
-                output_row = dict(row)
-                if result:
-                    output_row.update(
-                        {
-                            "Insurance Name": agg_name,
-                            "Begin Date": agg_begin,
-                            "End Date": agg_end,
-                            "Discrepancy": discrepancy,
-                            "Penalty": penalty,
-                        }
-                    )
-                else:
-                    output_row.update(
-                        {
-                            "Insurance Name": "",
-                            "Begin Date": "",
-                            "End Date": "",
-                            "Discrepancy": discrepancy,
-                            "Penalty": penalty,
-                        }
-                    )
-
-                writer.writerow(output_row)
-
                 screenshot_prefix = (
                     f"screenshot_{sanitized_name}_{member_id_raw}_{timestamp}"
                 )
                 take_screenshot(page, output_folder, screenshot_prefix)
+
+            output_row = dict(row)
+            output_row.update(
+                {
+                    "Insurance Name": agg_name,
+                    "Begin Date": agg_begin,
+                    "End Date": agg_end,
+                    "Discrepancy": discrepancy,
+                    "Penalty": penalty,
+                }
+            )
+            writer.writerow(output_row)
+            progress_writer.writerow(output_row)
+            progress_f.flush()
+
+            screenshot_prefix = (
+                f"screenshot_{sanitized_name}_{member_id_raw}_{timestamp}"
+            )
+
             print(f"Processed {idx}/{len(input_rows)}: Medicaid Number={member_id_raw}")
             f_out.flush()  # ensure data is written to disk after each row
         f_out.close()  # close the file after processing all rows
+        progress_f.close()
 
     print(f"✅ Automation complete. Output saved to {output_file}")
 
