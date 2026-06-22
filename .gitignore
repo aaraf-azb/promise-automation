@@ -1,0 +1,15 @@
+# Exclude build files and executables
+__pycache__/
+build/
+dist/
+*.spec
+*.exe
+
+# Exclude logo and image assets from being committed to GitHub
+*.ico
+*.png
+
+# Exclude sensitive spreadsheets and data files
+*.csv
+*.xlsx
+*.zip
